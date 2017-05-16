@@ -109,6 +109,11 @@ def power(time, RC, Vs, i0):
     current = i0*math.exp(-time/float(RC))
     return voltage*current
 
+#Exit clean up
+def clean_up():
+    for fltr in filters:
+        fltr.stopWatching()
+
 #Filters
 filters = {
     "chargeDeposited": contract.on("chargeDeposited", None, chargeDeposited),
@@ -116,24 +121,9 @@ filters = {
     "stateChanged": contract.on("stateChanged", None, stateChanged),
     "priceUpdated": contract.on("priceUpdated", None, priceUpdated),
     "charging": contract.on("charging", None, charging),
-    "stopCharging": contract.on("chargingStopped", None, stop_charging)
+    "stopCharging": contract.on("chargingStopped", None, stop_charging),
+    "killed": contract.on("killed", None, clean_up)
     }
 
-#Exit clean up
-def clean_up():
-    for fltr in filters:
-        fltr.stopWatching()
 
-#Testing
-user = web.eth.accounts[1]
-contract.transact({'from': user, 'value': eth_utils.to_wei(1,'ether')}).depositCharge()
-time.sleep(10)
-contract.transact({'from': user}).notifyCharge()
-time.sleep(10)
-contract.transact({'from': user}).startCharging()
-time.sleep(120)
-contract.transact({'from': user}).stopCharging()
-time.sleep(10)
-contract.transact({'from': user}).withdraw()
-time.sleep(10)
 

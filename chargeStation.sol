@@ -49,8 +49,15 @@ contract ChargeStation is Owned {
 	event fetchPrice();
 	event stateChanged(State from, State to);
 	event charging(address charger, uint time);
+	event notified(address notifier, uint time);
 	event consume(address charger, uint consume);
 	event chargingStopped(address charger, uint time);
+	event killed();
+	
+	function shutDown() onlyOwner {
+		killed();
+		kill();
+	}
 	
 	function update(uint _price) onlyStation returns (bool){
 		uint time = now;
@@ -104,11 +111,13 @@ contract ChargeStation is Owned {
 			charger = msg.sender;
 			stateChanged(State.Idle, State.Notified);			
 			fetchPrice();
+			notified(charger,prepStart);
 			return true;
 		} else if (state == State.Notified && now > prepStart + prepDuration) {
 			prepStart = now;
 			charger = msg.sender;
 			fetchPrice();
+			notified(charger,prepStart);
 			return true;
 		} else if (state == State.PrepCharging && now > prepStart + prepDuration) {
 			prepStart = now;
@@ -116,6 +125,7 @@ contract ChargeStation is Owned {
 			state = State.Notified;
 			stateChanged(State.Idle, State.Notified);
 			fetchPrice();
+			notified(charger,prepStart);
 			return true;
 		}
 		return false;
