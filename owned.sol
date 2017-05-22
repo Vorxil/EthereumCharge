@@ -15,4 +15,8 @@ contract Owned {
 	function kill() onlyOwner {
 		suicide(owner);
 	}
+	
+	function getOwner() returns (address) {
+		return owner;
+	}
 }

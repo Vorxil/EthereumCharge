@@ -1,4 +1,4 @@
-import solc, web3, time, atexit, string, sys, math, datetime, decimal, threading, eth_utils
+import solc, web3, atexit, string, sys, datetime, decimal, filter_utils, eth_utils
 
 #Setup
 
@@ -46,20 +46,11 @@ contract = web3.contract.Contract.factory(web,
                                           abi = contract_abi,
                                           bytecode = contract_bin,
                                           bytecode_runtime = contract_bin_runtime)
-filters = {}
 updated = False
 charging = False
+charge_fltr = None
+stop_fltr = None
 
-
-def setupFilters():
-    global filters
-    filters = {
-        "chargeDeposited": contract.on("chargeDeposited", None, chargeDeposited),
-        "priceUpdated": contract.on("priceUpdated", None, priceUpdated),
-        "charging": contract.on("charging", None, charging),
-        "consume": contract.on("consume", None, consume),
-        "stopCharging": contract.on("chargingStopped", None, stop_charging)
-        }
 #Commands
 
 def parse_input(tokens):
@@ -102,16 +93,11 @@ def command_balance(tokens):
         print "Command 'balance' takes no arguments"
 
 def command_station(tokens):
-    global filters
     global contract
     if len(tokens) == 2:
         address = tokens[1]
-        if web3.eth.is_address(address):
-            if contract.address != None:
-                for fltr in filters:
-                    fltr.stopWatching() 
+        if web3.eth.is_address(address): 
             contract.address = address
-            filters = setupFilters()
             print "New station: " + str(address)
         else:
             print "Not a valid address"
@@ -127,7 +113,14 @@ def command_deposit(tokens):
             return
         if contract.address != None:
             if amount > 0:
-                contract.transact({'value' : eth_utils.to_wei(amount,'ether')}).depositCharge()
+                fltr = contract.on("chargeDeposited", None)
+                txHash = contract.transact({'value' : eth_utils.to_wei(amount,'ether')}).depositCharge()
+                event = filter_utils.getTxEvent(fltr, txHash, 60, 1)
+                if len(event) == 0:
+                    print "Deposit timed out"
+                    return
+                args = event['args']
+                print "Deposited " + str(eth_utils.from_wei(args['value'],'ether')) + " Ether" 
             else:
                 print "Amount must be positive, non-zero"
         else:
@@ -146,34 +139,102 @@ def command_withdraw(tokens):
 
 def command_charge(tokens):
     global updated
+    global charge_fltr
+    global stop_fltr
     if len(tokens) == 1:
         if contract.address != None:
-            updated = False
-            contract.transact().notifyCharge()
+            fltr = contract.on("priceUpdated", None)
+            hashed = contract.call().getHash(web.eth.defaultAccount)
+            txHash = contract.transact().notifyCharge()
+            event = filter_utils.getDeepEvent(fltr, hashed, 20, 1)
+
+            if len(event) == 0:
+                print "Notification timed out"
+                return
+
+            print "Price: " + str(eth_utils.from_wei(
+                event['args']['price'], 'ether')*1000*3600) + " Ether"
+
+            response = raw_input("Charge at current price (y/n)? ")
+            if response != 'y':
+                return
+
+            fltr = contract.on("charging", None)
+            txHash = contract.transact().startCharging()
+            event = filter_utils.getTxEvent(fltr, txHash, 20, 1)
+            if len(event) == 0:
+                print "Charging timed out"
+                return
+            print "Charging..."
+
+            def powerUpdate(event):
+                args = event['args']
+                charge = decimal.Decimal(args['consume'])
+                charge = charge/(decimal.Decimal(1000*3600))
+                exp = decimal.Decimal('0.000000001')
+                print "Charged " + str(charge.quantize(exp)) + " kWh"
+
+            def stop_filter(event):
+                global charge_fltr
+                global stop_fltr
+                args = event['args']
+                if args['charger'] == web.eth.defaultAccount:
+                    charge_fltr.stopWatching()
+                    stop_fltr.stopWatching()
+
+                    exp = decimal.Decimal('0.0000001')
+                    charge = decimal.Decimal(args['totalCharge'])
+                    charge = charge/(decimal.Decimal(1000*3600))
+                    cost = eth_utils.from_wei(args['cost'], 'ether')
+                    print "Charging stopped."
+                    print "Charged: " + str(charge.quantize(exp)) + " kWh"
+                    print "Total cost: " + str(cost.quantize(exp)) + " Ether"
+
+            charge_fltr = contract.on("consume", None, powerUpdate)
+            stop_fltr = contract.on("chargingStopped", None, stop_filter)
+            return            
         else:
             print "No station given! Use 'station' to set the address."
     else:
         print "Command 'charge' takes no argument"
 
 def command_stop(tokens):
-    global charging
+    global charge_fltr
     if len(tokens) == 1:
         if contract.address != None:
-            contract.transact().stopCharge()
-            charging = False
+            try:
+                fltr = contract.on("chargingStopped", None)
+                txHash = contract.transact().stopCharging()
+                event = filter_utils.getTxEvent(fltr,txHash,20,1)
+                if len(event) != 0:
+                    args = event['args']
+                    exp = decimal.Decimal('0.0000001')
+                    charge = decimal.Decimal(args['totalCharge'])
+                    charge = charge/(decimal.Decimal(1000*3600))
+                    cost = eth_utils.from_wei(args['cost'], 'ether')
+                    print "Charging stopped."
+                    print "Charged: " + str(charge.quantize(exp)) + " kWh"
+                    print "Total cost: " + str(cost.quantize(exp)) + " Ether"
+            except:
+                print "Not charging"
+            if charge_fltr != None:
+                charge_fltr.stopWatching()
+                charge_fltr = None    
         else:
             print "No station given! Use 'station' to set the address."
     else:
         print "Command 'stop' takes no argument"
 
 def command_logout(tokens):
-    global filters
+    global charge_fltr 
     if len(tokens) == 1:
-        if charging == True:
-            contract.transact().stopCharge()
-        for fltr in filters:
-            fltr.stopWatching
-        filters = {}
+        try:
+            contract.transact().stopCharging()
+        except:
+            print "Not charging"
+        if charge_fltr != None:
+            charge_fltr.stopWatching()
+            charge_fltr = None
         exit(0)
     else:
         print "Command 'logout' takes no argument"
@@ -202,38 +263,17 @@ command_desc = {
     "logout": "Logout"
     }
 
-#Event handlers
-def chargeDeposited(event):
-    args = event['args']
-    print "Deposited " + str(eth_utils.from_wei(args['value'], 'ether')) + " Ether"
-
-def priceUpdated(event):
-    args = event['args']
-    print "New price: " + str(eth_utils.from_wei(args['price'],'ether')*1000*3600) + " Ether/kWh"
-
-def consume(event):
-    args = event['args']
-    print "Consuming at " + str(args['consume']) + " W"
-
-def charging(event):
-    global charging
-    chargine = True
-    print "Charging..."
-
-def stop_charging(event):
-    global charging
-    chargine = True
-    print "Finished charging"
-
 #Exit clean up
 def clean_up():
-    global filters
-    if charging == True:
-        contract.transact.stopCharge()
-    for fltr in filters:
-        fltr.stopWatching
-    filters = {}
-
+    global charge_fltr
+    try:
+        contract.transact().stopCharging()
+    except:
+        print "Not charging"
+    if charge_fltr != None:
+        charge_fltr.stopWatching()
+        charge_fltr = None
+            
 atexit.register(clean_up)
 
 #Main loop

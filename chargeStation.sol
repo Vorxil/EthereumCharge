@@ -44,28 +44,32 @@ contract ChargeStation is Owned {
 		}
 	}
 	
-	event priceUpdated(uint price);
+	event priceUpdated(uint price, bytes32 hash);
 	event chargeDeposited(address from, uint value);
-	event fetchPrice();
+	event fetchPrice(bytes32 asker);
 	event stateChanged(State from, State to);
 	event charging(address charger, uint time);
 	event notified(address notifier, uint time);
 	event consume(address charger, uint consume);
-	event chargingStopped(address charger, uint time);
+	event chargingStopped(address charger, uint time, uint totalCharge, uint cost);
 	event killed();
 	
 	function shutDown() onlyOwner {
 		killed();
 		kill();
 	}
+
+	function getHash(address from) returns (bytes32) {
+		return keccak256(keccak256(from), station);
+	}
 	
-	function update(uint _price) onlyStation returns (bool){
+	function update(uint _price, bytes32 asker) onlyStation returns (bool){
 		uint time = now;
 		if (state == State.Idle) {
 			price = _price;
 			priceLocked = false;
 			charger = address(0);
-			priceUpdated(price);
+			priceUpdated(price, keccak256(asker,msg.sender));
 			return true;
 		}
 		else if (state == State.Notified) {
@@ -74,7 +78,7 @@ contract ChargeStation is Owned {
 				state = State.PrepCharging;
 				prepStart = now;
 				priceLocked = true;
-				priceUpdated(price);
+				priceUpdated(price, keccak256(asker, msg.sender));
 				stateChanged(State.Notified, State.PrepCharging);
 				return true;
 			}
@@ -83,7 +87,7 @@ contract ChargeStation is Owned {
 				state = State.Idle;
 				priceLocked = false;
 				charger = address(0);
-				priceUpdated(price);
+				priceUpdated(price, keccak256(asker, msg.sender));
 				stateChanged(State.Notified, State.Idle);
 				return true;
 			}
@@ -93,7 +97,7 @@ contract ChargeStation is Owned {
 				state = State.Idle;
 				priceLocked = false;
 				charger = address(0);
-				priceUpdated(price);
+				priceUpdated(price, keccak256(asker, msg.sender));
 				stateChanged(State.PrepCharging, State.Idle);
 				return true;
 			}
@@ -105,28 +109,30 @@ contract ChargeStation is Owned {
 	}
 	
 	function notifyCharge() returns (bool){
-		if (state == State.Idle) {
-			prepStart = now;
-			state = State.Notified;
-			charger = msg.sender;
-			stateChanged(State.Idle, State.Notified);			
-			fetchPrice();
-			notified(charger,prepStart);
-			return true;
-		} else if (state == State.Notified && now > prepStart + prepDuration) {
-			prepStart = now;
-			charger = msg.sender;
-			fetchPrice();
-			notified(charger,prepStart);
-			return true;
-		} else if (state == State.PrepCharging && now > prepStart + prepDuration) {
-			prepStart = now;
-			charger = msg.sender;
-			state = State.Notified;
-			stateChanged(State.Idle, State.Notified);
-			fetchPrice();
-			notified(charger,prepStart);
-			return true;
+		if (balances[msg.sender] > 0) {
+			if (state == State.Idle) {
+				prepStart = now;
+				state = State.Notified;
+				charger = msg.sender;
+				stateChanged(State.Idle, State.Notified);			
+				fetchPrice(keccak256(msg.sender));
+				notified(charger,prepStart);
+				return true;
+			} else if (state == State.Notified && now > prepStart + prepDuration) {
+				prepStart = now;
+				charger = msg.sender;
+				fetchPrice(keccak256(msg.sender));
+				notified(charger,prepStart);
+				return true;
+			} else if (state == State.PrepCharging && now > prepStart + prepDuration) {
+				prepStart = now;
+				charger = msg.sender;
+				state = State.Notified;
+				stateChanged(State.Idle, State.Notified);
+				fetchPrice(keccak256(msg.sender));
+				notified(charger,prepStart);
+				return true;
+			}
 		}
 		return false;
 	}
@@ -163,7 +169,7 @@ contract ChargeStation is Owned {
 				chargeEnd = now;
 				balances[owner] += balances[charger];
 				balances[charger] = 0;
-				chargingStopped(charger, chargeEnd);
+				chargingStopped(charger, chargeEnd, totalCharge, totalCharge*price);
 				charger = address(0);
 				state = State.Idle;
 				stateChanged(State.Charging, State.Idle);
@@ -178,9 +184,9 @@ contract ChargeStation is Owned {
 	function stopCharging() onlyCharger returns (bool){
 		if (state == State.Charging) {
 			chargeEnd = now;
-			chargingStopped(charger, chargeEnd);
 			uint cost = totalCharge*price;
 			uint amount = balances[charger];
+			chargingStopped(charger, chargeEnd, totalCharge, cost);
 			if (cost > amount) {
 				balances[owner] = amount;
 				balances[charger] = 0;
