@@ -153,7 +153,7 @@ def command_charge(tokens):
                 return
 
             print "Price: " + str(eth_utils.from_wei(
-                event['args']['price'], 'ether')*1000*3600) + " Ether"
+                event['args']['price'], 'ether')*1000*3600) + " Ether/kWh"
 
             response = raw_input("Charge at current price (y/n)? ")
             if response != 'y':
@@ -179,8 +179,9 @@ def command_charge(tokens):
                 global stop_fltr
                 args = event['args']
                 if args['charger'] == web.eth.defaultAccount:
-                    charge_fltr.stopWatching()
-                    stop_fltr.stopWatching()
+                    charge_fltr.stop_watching()
+                    stop_fltr.running = False
+                    stop_fltr.web3.eth.uninstallFilter(stop_fltr.filter_id)
 
                     exp = decimal.Decimal('0.0000001')
                     charge = decimal.Decimal(args['totalCharge'])
@@ -200,8 +201,15 @@ def command_charge(tokens):
 
 def command_stop(tokens):
     global charge_fltr
+    global stop_fltr
     if len(tokens) == 1:
         if contract.address != None:
+            if charge_fltr != None:
+                charge_fltr.stopWatching()
+                charge_fltr = None
+            if stop_fltr != None:
+                stop_fltr.stopWatching()
+                stop_fltr = None    
             try:
                 fltr = contract.on("chargingStopped", None)
                 txHash = contract.transact().stopCharging()
@@ -217,9 +225,7 @@ def command_stop(tokens):
                     print "Total cost: " + str(cost.quantize(exp)) + " Ether"
             except:
                 print "Not charging"
-            if charge_fltr != None:
-                charge_fltr.stopWatching()
-                charge_fltr = None    
+            
         else:
             print "No station given! Use 'station' to set the address."
     else:

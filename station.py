@@ -107,7 +107,7 @@ class station:
         charger = None
 
     def power(self, time, RC, Vs, i0):
-        voltage = Vs*(1 - math.exp(-time/RC))
+        voltage = Vs*(1 - math.exp(-time/float(RC)))
         current = i0*math.exp(-time/float(RC))
         return voltage*current
 
