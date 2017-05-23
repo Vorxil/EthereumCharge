@@ -7,7 +7,7 @@ contract ChargeStation is Owned {
 	mapping(address => uint) balances;
 	address charger;
 	address station;
-	enum State { Idle, Notified, PrepCharging, Charging }
+	enum State { Idle, Notified, Charging }
 	State state;
 	uint chargeStart;
 	uint chargeIntervalStart;
@@ -17,6 +17,7 @@ contract ChargeStation is Owned {
 	uint prepDuration;
 	uint totalCharge;
 	uint price;
+	uint oldPower;
 	bool priceLocked;
 	
 	function ChargeStation(address _station, uint _prepDuration) {
@@ -53,11 +54,6 @@ contract ChargeStation is Owned {
 	event consume(address charger, uint consume);
 	event chargingStopped(address charger, uint time, uint totalCharge, uint cost);
 	event killed();
-	
-	function shutDown() onlyOwner {
-		killed();
-		kill();
-	}
 
 	function getHash(address from) returns (bytes32) {
 		return keccak256(keccak256(from), station);
@@ -75,11 +71,9 @@ contract ChargeStation is Owned {
 		else if (state == State.Notified) {
 			if (time <= prepStart + prepDuration) {
 				price = _price;
-				state = State.PrepCharging;
 				prepStart = now;
 				priceLocked = true;
 				priceUpdated(price, keccak256(asker, msg.sender));
-				stateChanged(State.Notified, State.PrepCharging);
 				return true;
 			}
 			else if (time > prepStart + prepDuration) {
@@ -91,67 +85,53 @@ contract ChargeStation is Owned {
 				stateChanged(State.Notified, State.Idle);
 				return true;
 			}
-		} else if (state == State.PrepCharging) {
-			if (time > prepStart + prepDuration) {
-				price = _price;
-				state = State.Idle;
-				priceLocked = false;
-				charger = address(0);
-				priceUpdated(price, keccak256(asker, msg.sender));
-				stateChanged(State.PrepCharging, State.Idle);
-				return true;
-			}
-			else {
-				return false;
-			}
 		}
 		return false;
 	}
 	
-	function notifyCharge() returns (bool){
-		if (balances[msg.sender] > 0) {
-			if (state == State.Idle) {
-				prepStart = now;
-				state = State.Notified;
-				charger = msg.sender;
-				stateChanged(State.Idle, State.Notified);			
-				fetchPrice(keccak256(msg.sender));
-				notified(charger,prepStart);
-				return true;
-			} else if (state == State.Notified && now > prepStart + prepDuration) {
-				prepStart = now;
-				charger = msg.sender;
-				fetchPrice(keccak256(msg.sender));
-				notified(charger,prepStart);
-				return true;
-			} else if (state == State.PrepCharging && now > prepStart + prepDuration) {
-				prepStart = now;
-				charger = msg.sender;
-				state = State.Notified;
-				stateChanged(State.Idle, State.Notified);
-				fetchPrice(keccak256(msg.sender));
-				notified(charger,prepStart);
-				return true;
-			}
+	function notify() returns (bool){
+		if (state == State.Idle) {
+			prepStart = now;
+			state = State.Notified;
+			charger = msg.sender;
+			stateChanged(State.Idle, State.Notified);			
+			fetchPrice(keccak256(msg.sender));
+			notified(charger,prepStart);
+			return true;
+		} else if (state == State.Notified && now > prepStart + prepDuration) {
+			prepStart = now;
+			charger = msg.sender;
+			fetchPrice(keccak256(msg.sender));
+			notified(charger,prepStart);
+			return true;
 		}
 		return false;
 	}
 	
-	function startCharging() onlyCharger returns (bool) {
+	function cancel() onlyCharger returns (bool) {
+		require(state == State.Notified);
+		state = State.Idle;
+		charger = address(0);
+		stateChanged(State.Notified, State.Idle);
+		return true;
+	}
+	
+	function start() onlyCharger returns (bool) {
 		uint time = now;
-		if (state == State.PrepCharging) {
+		if (state == State.Notified) {
 			if (time < prepStart + prepDuration) {
 				totalCharge = 0;
 				chargeStart = now;
+				oldPower = 0;
 				chargeIntervalStart = now;
 				state = State.Charging;
-				stateChanged(State.PrepCharging, State.Charging);
+				stateChanged(State.Notified, State.Charging);
 				charging(charger, chargeStart);
 				return true;
 			} else {
 				charger = address(0);
 				state = State.Idle;
-				stateChanged(State.PrepCharging, State.Idle);
+				stateChanged(State.Notified, State.Idle);
 				return false;
 			}
 		} else {
@@ -162,8 +142,9 @@ contract ChargeStation is Owned {
 	function updatePower(uint power) onlyStation returns (bool) {
 		if (state == State.Charging) {
 			chargeIntervalEnd = now;
-			totalCharge += (chargeIntervalEnd - chargeIntervalStart)*power;
-			chargeIntervalStart;
+			totalCharge += ((chargeIntervalEnd - chargeIntervalStart)*(oldPower + power))/2;
+			oldPower = power;
+			chargeIntervalStart = chargeIntervalEnd;
 			consume(charger, totalCharge);
 			if (totalCharge*price >= balances[charger]) {
 				chargeEnd = now;
@@ -181,7 +162,7 @@ contract ChargeStation is Owned {
 		}
 	}
 	
-	function stopCharging() onlyCharger returns (bool){
+	function stop() onlyCharger returns (bool){
 		if (state == State.Charging) {
 			chargeEnd = now;
 			uint cost = totalCharge*price;
@@ -201,11 +182,16 @@ contract ChargeStation is Owned {
 		}
 		return false;
 	}
+	
+	function getBalance() returns (uint) {
+		return balances[msg.sender];
+	}
 		
 	
-	function depositCharge() payable {
+	function deposit() payable {
 		require(msg.sender != address(this));
 		require(msg.sender != address(0));
+		require(!(msg.sender == charger && state == State.Charging));
 		
 		balances[msg.sender] += msg.value;
 		

@@ -114,7 +114,7 @@ def command_deposit(tokens):
         if contract.address != None:
             if amount > 0:
                 fltr = contract.on("chargeDeposited", None)
-                txHash = contract.transact({'value' : eth_utils.to_wei(amount,'ether')}).depositCharge()
+                txHash = contract.transact({'value' : eth_utils.to_wei(amount,'ether')}).deposit()
                 event = filter_utils.getTxEvent(fltr, txHash, 60, 1)
                 if len(event) == 0:
                     print "Deposit timed out"
@@ -145,7 +145,7 @@ def command_charge(tokens):
         if contract.address != None:
             fltr = contract.on("priceUpdated", None)
             hashed = contract.call().getHash(web.eth.defaultAccount)
-            txHash = contract.transact().notifyCharge()
+            txHash = contract.transact().notify()
             event = filter_utils.getDeepEvent(fltr, hashed, 20, 1)
 
             if len(event) == 0:
@@ -157,10 +157,11 @@ def command_charge(tokens):
 
             response = raw_input("Charge at current price (y/n)? ")
             if response != 'y':
+                contract.transact().cancel()
                 return
 
             fltr = contract.on("charging", None)
-            txHash = contract.transact().startCharging()
+            txHash = contract.transact().start()
             event = filter_utils.getTxEvent(fltr, txHash, 20, 1)
             if len(event) == 0:
                 print "Charging timed out"
@@ -212,7 +213,7 @@ def command_stop(tokens):
                 stop_fltr = None    
             try:
                 fltr = contract.on("chargingStopped", None)
-                txHash = contract.transact().stopCharging()
+                txHash = contract.transact().stop()
                 event = filter_utils.getTxEvent(fltr,txHash,20,1)
                 if len(event) != 0:
                     args = event['args']
@@ -223,6 +224,8 @@ def command_stop(tokens):
                     print "Charging stopped."
                     print "Charged: " + str(charge.quantize(exp)) + " kWh"
                     print "Total cost: " + str(cost.quantize(exp)) + " Ether"
+                else:
+                    print "Stopping timed out"
             except:
                 print "Not charging"
             
@@ -235,11 +238,11 @@ def command_logout(tokens):
     global charge_fltr 
     if len(tokens) == 1:
         try:
-            contract.transact().stopCharging()
+            contract.transact().stop()
         except:
             print "Not charging"
         if charge_fltr != None:
-            charge_fltr.stopWatching()
+            charge_fltr.stop_watching()
             charge_fltr = None
         exit(0)
     else:
@@ -273,7 +276,7 @@ command_desc = {
 def clean_up():
     global charge_fltr
     try:
-        contract.transact().stopCharging()
+        contract.transact().stop()
     except:
         print "Not charging"
     if charge_fltr != None:
