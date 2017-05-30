@@ -1,139 +1,122 @@
-import solc, web3, time, atexit, string, sys, math, datetime, decimal, threading, eth_utils, filter_utils
+from factory import buildAndDeploy, getWeb
+from web3.contract import Contract
+from datetime import datetime
+from requests import get, Response, HTTPError, RequestException
+from decimal import Decimal
+from eth_utils import to_wei
+from math import sin, pi, exp, log
+from threading import Thread
+from time import sleep, clock
 
-class station:
+class NoJsonException(RequestException):
+    """The response has no json!"""
 
-    contract = None
-    web = None
-    charging = False
-    charger = None
+class InvalidResponseException(RequestException):
+    """Json response does not match expectations"""
+
+class PowerUpdateDaemon():
+    running = False
     thread = None
-    filters = {}
+    up_period = 1
+    up_fun = None
+    up_args = ()
+    up_kwargs = {}
 
-    def __init__(self, url, owner_account, station_account):
-        
-        filePath = ".\\chargeStation.sol"
-        contractName = "ChargeStation"
+    def __init__(self, update_period, update_fun, *update_args, **update_kwargs):
+        up_fun = update_fun
+        up_args = update_args
+        up_kwargs = update_kwargs
+        up_period = update_period
 
-        compiled = solc.compile_files([filePath])
-
-        contract_abi = compiled[filePath + ":" + contractName]['abi']
-        contract_bin = compiled[filePath + ":" + contractName]['bin']
-        contract_bin_runtime = compiled[filePath + ":" + contractName]['bin-runtime']
-
-        web = web3.Web3(web3.providers.rpc.HTTPProvider(url))
-
-        connected = web.isConnected()
-
-        print "Is connected to TestRPC: " + str(connected)
-        if not connected:
-            raise ValueError
-
-        web.eth.defaultAccount = station_account
-
-        contract = web3.contract.Contract.factory(web,
-                                                  contract_name = contractName,
-                                                  abi = contract_abi,
-                                                  bytecode = contract_bin,
-                                                  bytecode_runtime = contract_bin_runtime)
-
-        contract.address = contract.web3.eth.getTransactionReceipt(
-                                contract.deploy(
-                                    transaction = {'from': owner_account},
-                                    args = (station_account, 120)
-                                )
-                            )['contractAddress']
-
-        print "Contract deployed at " + contract.address
-
-        #Charging details
-        self.thread = None
-        self.charger = None
-        self.chargeState = False
-
-        self.contract = contract
-        self.web = web
-
-        self.setup_filters()
-
-    #Event handlers
-    def updatePrice(self, event):
-        d = datetime.datetime.now()
-        delta = d - datetime.datetime(d.year, 1, 1)
-        nominal = 7.69 + math.sin(2*math.pi*float(delta.days)/365.25)#0.01 Euro/kWh
-        eurToEther = 1/82.5470 #Ether/Euro
-        converted = 0.01*nominal*eurToEther/(1000*3600)#Ether/J
-        self.contract.transact().update(eth_utils.to_wei(converted,'ether'),
-                                        event['args']['asker'])
-
-    def chargeDeposited(self, event):
-        args = event['args']
-        print str(args['from']) + " deposit:\t" + str(args['value']) + " Wei"
-
-    def priceUpdated(self, event):
-        args = event['args']
-        print "New price:\t" + str(eth_utils.from_wei(args['price'],'ether')*1000*3600) + " Ether/kWh"
-
-    def stateChanged(self, event):
-        args = event['args']
-        print "State change:\t" + str(args['from']) + "\t==>\t" + str(args['to'])
-
-    def updatePower(self,charger,t0,sleepTime):
-        global charging
-        print charger + " charging..."
-        while (charging):
-            t1 = time.clock()
-            delta = t1-t0
-            p = self.power(t1-t0,130,400,300)
-            self.contract.transact().updatePower(int(math.ceil(p)))
-            print "Consuming at " + str(p) + " W"
-            time.sleep(sleepTime)
-
-    def charging(self, event):
-        global charger
-        global charging
-        global thread
-        args = event['args']
-        charger = args['charger']
-        charging = True
-        thread = threading.Thread(target=self.updatePower, args=(str(charger),time.clock(),6))
+        thread = Thread(target=self.run)
+        thread.daemon = True
         thread.start()
 
-    def stop_charging(self, event):
-        global charging
-        global thread
-        charging = False
-        thread.join()
-        print "Charging stopped"
-        charger = None
+    def run(self):
+        self.running = True
 
-    def power(self, time, RC, Vs, i0):
-        voltage = Vs*(1 - math.exp(-time/float(RC)))
-        current = i0*math.exp(-time/float(RC))
-        return voltage*current
+        while self.running == True :
+            up_fun(up_args, up_kwargs)
+            sleep(up_period)
 
-    #Exit clean up
-    def clean_up():
-        for fltr in self.filters:
-            fltr.stopWatching()
+    def stop(self):
+        if self.running == True:
+            self.running = False
+            
+    
 
-    #Filters
-    def setup_filters(self):    
-        self.filters = {
-            "chargeDeposited": self.contract.on("chargeDeposited", None, self.chargeDeposited),
-            "fetchPrice": self.contract.on("fetchPrice", None, self.updatePrice),
-            "stateChanged": self.contract.on("stateChanged", None, self.stateChanged),
-            "priceUpdated": self.contract.on("priceUpdated", None, self.priceUpdated),
-            "charging": self.contract.on("charging", None, self.charging),
-            "stopCharging": self.contract.on("chargingStopped", None, self.stop_charging),
-            "killed": self.contract.on("killed", None, self.clean_up)
-            }
+class Station:
+    #CONSTS
+    CONTRACT_FILE = ".\\chargeStation.sol"
+    CONTRACT_PATH = ".\\chargeStation.sol:ChargeStation"
+    CONTRACT_NAME = "ChargeStation"
+
+    ETH_PRICE_URL = "https://coinmarketcap-nexuist.rhcloud.com/api/eth"
+
+    #Variables
+    contract = None
+    daemon = None
+
+    #Constructor
+    def __init__(self, owner_account, prep_duration_seconds=60, web3=getWeb()):
+        if web3 == None:
+            raise ValueError("No Web!")
+        elif not web3.isAddress(owner_account):
+            raise ValueError("No Account!")
+        elif prep_duration_seconds == None:
+            raise ValueError("No prep duration!")
+        elif not isinstance(prep_duration_seconds, (int, long)):
+            raise ValueError("Prep duration not an integer")
+        elif prep_duration_seconds <= 0:
+            raise ValueError("Prep duration must be positive and non-zero (seconds)")
+
+        self.contract = buildAndDeploy(self.CONTRACT_NAME, self.CONTRACT_FILE, self.CONTRACT_PATH, web3,
+                                       owner_account, prep_duration_seconds)
 
 
-web = web3.Web3(web3.providers.rpc.HTTPProvider("http://localhost:8545"))
-s = station("http://localhost:8545", web.eth.accounts[1], web.eth.accounts[0])
+    #Daemon function
+    def updatePower(self,t0,sleepTime):
 
-while (True):
-    inp = raw_input()
-    if inp == 'q':
-        s.clean_up()
-    quit(0)
+        def power(time, charge_voltage, battery_voltage, rel_voltage_bound, battery_capacity, resistance):
+            nominalPower = (charge_voltage*(charge_voltage - (1-rel_voltage_bound)*battery_voltage))/float(resistance)
+            powerFactor = exp(-((1+rel_voltage_bound)*battery_voltage/(float(resistance*capacity*3600)))*time)
+        return nominalPower*powerFactor
+
+        charge_voltage = 500#Volts
+        battery_voltage = 300#Volts
+        rel_voltage_bound = 0.2# 20% operating voltage max deviation from nominal
+        battery_capacity = 200#Amp-hours
+        battery_resistance = 1.696#Ohm, internal resistance only
+        #35 min charge time at 500 volts and 300 A
+    
+        t1 = clock()
+        delta = t1-t0
+        p = power(t1-t0,
+                  charge_voltage,
+                  battery_voltage,
+                  rel_voltage_bound,
+                  battery_capacity,
+                  battery_resistance)
+        self.contract.transact().updatePower(int(math.ceil(p)))
+
+    #Event Handlers
+    def fetchPrice(self, event):
+        d = datetime.now()
+        delta = d - datetime(d.year, 1, 1)
+        resp = get(self.ETH_PRICE_URL)
+        if resp.status_code != 200:
+            raise HTTPError(None, {'response': resp})
+        elif resp.headers['content-type'] != 'application/json':
+            raise NoJsonException(None, {'response': resp})
+        json = resp.json()
+        if 'price' not in json.keys() or 'eur' not in json['price'].keys():
+            raise InvalidResponseException(None, {'response': resp})
+
+        eur_to_eth = 1/Decimal(json['price']['eur'])
+        
+        nominal = 7.69 + sin(2*Decimal(pi)*Decimal(delta.days)/Decimal(365.25))#0.01 Euro/kWh
+        converted = to_wei(Decimal(nominal)*eur_to_eth/Decimal(100000*3600), 'ether') #Convert 0.01 Euro/kWh to Wei/J
+
+        self.contract.transaction().updatePrice(converted, event['args']['asker'])
+
+    

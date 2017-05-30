@@ -11,23 +11,33 @@ def connected():
         def connected_decorator(self, *f_args, **f_kwargs):
             if self.isConnected() == False:
                 raise NoConnectionError
-        
-            if self.contract.address == None:
-                raise NoStationError
 
             f(self, *f_args, **f_kwargs)
 
         return connected_decorator
     return connected_wrapper
 
+def hasAddress():
+    def hasAddress_wrapper(f):
+        @wraps(f)
+        def hasAddress_decorator(self, *f_args, **f_kwargs):
+            if self.contract.address == None:
+                raise NoStationError
+
+            f(self, *f_args, **f_kwargs)
+
+        return hasAddress_decorator
+    return hasAddress_wrapper
+
 class User:
-    #Variables
+    #CONSTS
     CONTRACT_FILE = ".\\chargeStation.sol"
     CONTRACT_PATH = ".\\chargeStation.sol:ChargeStation"
     CONTRACT_NAME = "ChargeStation"
 
     NUMBER_REGEX = r"^((0|([1-9][0-9]*))|((0|([1-9][0-9]*))\.[0-9]+))$"
 
+    #Variables
     contract = None
 
     #Functions
@@ -48,14 +58,12 @@ class User:
             return True
         return False
 
-    def balance(self):
-
-        if self.isConnected() == False:
-            raise NoConnectionError
-        
+    @connected()
+    def balance(self):        
         return Decimal(self.contract.web3.eth.getBalance(self.contract.web3.eth.defaultAccount))
 
     @connected()
+    @hasAddress()
     def deposit(self, amount):
 
         if match(self.NUMBER_REGEX, amount) == None:
@@ -73,28 +81,34 @@ class User:
         return self.contract.transact({'value' : d}).deposit()
 
     @connected()
+    @hasAddress()
     def withdraw(self):
         return self.contract.transact().withdraw()
         
 
     @connected()
+    @hasAddress()
     def notify(self):
         return self.contract.transact().notify()
 
 
     @connected()
+    @hasAddress()
     def start(self):
         return self.contract.transact().start()
 
     @connected()
+    @hasAddress()
     def stop(self):
         return self.contract.transact().stop()
 
     @connected()
+    @hasAddress()
     def cancel(self):
         return self.contract.transact().cancel()
 
     @connected()
+    @hasAddress()
     def getHash(self):
         return self.contract.call().getHash(self.web3.eth.defaultAccount)
 
