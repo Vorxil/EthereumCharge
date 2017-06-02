@@ -59,6 +59,10 @@ contract ChargeStation is Owned {
 		return keccak256(keccak256(from), station);
 	}
 	
+	function getStateInt() returns (uint8) {
+		return uint8(state);
+	}
+	
 	function update(uint _price, bytes32 asker) onlyStation returns (bool){
 		uint time = now;
 		if (state == State.Idle) {

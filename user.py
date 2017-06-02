@@ -12,7 +12,7 @@ def connected():
             if self.isConnected() == False:
                 raise NoConnectionError
 
-            f(self, *f_args, **f_kwargs)
+            return f(self, *f_args, **f_kwargs)
 
         return connected_decorator
     return connected_wrapper
@@ -24,7 +24,7 @@ def hasAddress():
             if self.contract.address == None:
                 raise NoStationError
 
-            f(self, *f_args, **f_kwargs)
+            return f(self, *f_args, **f_kwargs)
 
         return hasAddress_decorator
     return hasAddress_wrapper
