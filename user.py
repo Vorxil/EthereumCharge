@@ -110,7 +110,12 @@ class User:
     @connected()
     @hasAddress()
     def getHash(self):
-        return self.contract.call().getHash(self.web3.eth.defaultAccount)
+        return self.contract.call().getHash(self.contract.web3.eth.defaultAccount)
+
+    @connected()
+    @hasAddress()
+    def getState(self):
+        return self.contract.call().getState()
 
     def isConnected(self):
         return self.contract.web3.isConnected()

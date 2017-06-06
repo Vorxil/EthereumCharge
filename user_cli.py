@@ -1,292 +1,328 @@
-import solc, web3, atexit, string, sys, datetime, decimal, filter_utils, eth_utils
+from user import User, NotEnoughFundsError, NoConnectionError, NoStationError
+from eth_utils import from_wei, to_wei
+from filter_utils import getTxEvent, getDeepEvent
+from decimal import Decimal
+from threading import Thread
+from time import sleep
+import atexit
+from re import match
+from factory import getWeb
+from string import split
+from traceback import print_exc
+from station import Station
 
-#Setup
 
-filePath = ".\\chargeStation.sol"
-contractName = "ChargeStation"
 
-compiled = solc.compile_files([filePath])
+class UserCLI:
 
-contract_abi = compiled[filePath + ":" + contractName]['abi']
-contract_bin = compiled[filePath + ":" + contractName]['bin']
-contract_bin_runtime = compiled[filePath + ":" + contractName]['bin-runtime']
+    #CONSTS
+    STATES = Station.states
 
-web = web3.Web3(web3.providers.rpc.HTTPProvider("http://localhost:8545"))
+    #Variables
+    user = None
+    charge_filter = None
+    stop_filter = None
+    commands = {}
+    command_desc = {}
 
-connected = web.isConnected()
+    #Constructor
+    def __init__(self, web3):
+        self.user = User(web3)
+        self.commands = {
+            "help": self.command_help,
+            "ls": self.command_ls,
+            "balance": self.command_balance,
+            "station": self.command_station,
+            "deposit": self.command_deposit,
+            "withdraw": self.command_withdraw,
+            "charge": self.command_charge,
+            "stop": self.command_stop,
+            "logout": self.command_logout
+            }
 
-print "Is connected to TestRPC: " + str(connected)
-if not connected:
-    exit(0)
-
-numAccounts = len(web.eth.accounts)
-accountChoice = raw_input("Select account (2-" + str(numAccounts) + "): ")
-
-if accountChoice.isdigit() and len(accountChoice) > 0:
-    if len(accountChoice) > 1 and accountChoice[0] == '0':
-        print "Invalid number"
-        exit(0)
-    else:
-        accountChoice = int(accountChoice)
-else:
-    print "Not a number"
-
-if accountChoice >= numAccounts:
-    print "Account number too large"
-    exit(0)
-
-web.eth.defaultAccount = web.eth.accounts[accountChoice]
-
-print "User address: " + str(web.eth.defaultAccount)
-
-# Global
-contract_address = ""
-contract = web3.contract.Contract.factory(web,
-                                          contract_name = contractName,
-                                          abi = contract_abi,
-                                          bytecode = contract_bin,
-                                          bytecode_runtime = contract_bin_runtime)
-updated = False
-charging = False
-charge_fltr = None
-stop_fltr = None
-
-#Commands
-
-def parse_input(tokens):
-    if len(tokens) == 0:
-        return do_nothing
-    else:
-        if tokens[0] in commands:
-            return commands[tokens[0]]
+        self.command_desc = {
+            "help": "Get help on commands. Identical to ls.",
+            "ls": "List all commands",
+            "balance": "Fetch account balance",
+            "station": "Set the contract address of the charging station, takes address as single argument",
+            "deposit": "Deposit ether, takes deposit amount as single argument",
+            "withdraw": "Withdraw all your ether",
+            "charge": "Begin charging",
+            "stop": "Stop charging",
+            "logout": "Logout"
+            }
+        atexit.register(self.clean_up)
+        
+    #Helpers
+    def parse_input(self, tokens):
+        if len(tokens) == 0:
+            return self.do_nothing
         else:
-            return invalid_command
+            if tokens[0] in self.commands:
+                return self.commands[tokens[0]]
+            else:
+                return self.invalid_command
 
-def do_nothing(tokens):
-    return
+    def web3(self):
+        return self.user.contract.web3
 
-def invalid_command(tokens):
-    print str(tokens[0]) + " is not a valid command. Use 'help' for help."
-    return
+    def eth(self):
+        return self.user.contract.web3.eth
 
-def command_help(tokens):
-    if len(tokens) == 1:
-        for command in command_desc:
-            print command + "\t" + command_desc[command]
+    #Event handlers
+    def powerUpdate(self, event):
+        args = event['args']
+        charge = Decimal(args['consume'])
+        charge = charge/Decimal(1000*3600)
+        exp = Decimal('0.000000001')
+        print "Charged " + str(charge.quantize(exp)) + " kWh"
+
+    def stop_filter(self, event):
+        args = event['args']
+        if args['charger'] == self.eth().defaultAccount:
+            self.charge_fltr.stop_watching()
+            self.stop_fltr.running = False
+            self.stop_fltr.web3.eth.uninstallFilter(self.stop_fltr.filter_id)
+
+            exp = Decimal('0.0000001')
+            charge = Decimal(args['totalCharge'])
+            charge = charge/Decimal(1000*3600)
+            cost = from_wei(args['cost'], 'ether')
+            print "Charging stopped."
+            print "Charged: " + str(charge.quantize(exp)) + " kWh"
+            print "Total cost: " + str(cost.quantize(exp)) + " Ether"
+
+    #Commands
+    def do_nothing(self, tokens):
         return
-    else:
-        print "Command 'help' takes no arguments"
 
-def command_ls(tokens):
-    if len(tokens) == 1:
-        for command in command_desc:
-            print command + "\t" + command_desc[command]
+    def invalid_command(self, tokens):
+        print str(tokens[0]) + " is not a valid command. Use 'help' for help."
         return
-    else:
-        print "Command 'ls' takes no arguments"
 
-def command_balance(tokens):
-    if len(tokens) == 1:
-        print "Balance: " + str(eth_utils.from_wei(
-            web.eth.getBalance(web.eth.defaultAccount),'ether')) + " Ether"
-    else:
-        print "Command 'balance' takes no arguments"
-
-def command_station(tokens):
-    global contract
-    if len(tokens) == 2:
-        address = tokens[1]
-        if web3.eth.is_address(address): 
-            contract.address = address
-            print "New station: " + str(address)
-        else:
-            print "Not a valid address"
-    else:
-        print "Command 'station' takes one argument"
-
-def command_deposit(tokens):
-    if len(tokens) == 2:
-        try:
-            amount = decimal.Decimal(tokens[1])
-        except:
-            print "Not a valid number"
+    def command_help(self, tokens):
+        if len(tokens) == 1:
+            for command in self.command_desc:
+                print command + "\t" + self.command_desc[command]
             return
-        if contract.address != None:
-            if amount > 0:
-                fltr = contract.on("chargeDeposited", None)
-                txHash = contract.transact({'value' : eth_utils.to_wei(amount,'ether')}).deposit()
-                event = filter_utils.getTxEvent(fltr, txHash, 60, 1)
+        else:
+            print "Command 'help' takes no arguments"
+
+    def command_ls(self, tokens):
+        if len(tokens) == 1:
+            for command in self.command_desc:
+                print command + "\t" + self.command_desc[command]
+            return
+        else:
+            print "Command 'ls' takes no arguments"
+
+    def command_balance(self, tokens):
+        if len(tokens) == 1:
+            try:
+                print "Balance: " + str(from_wei(self.user.balance(),'ether')) + " Ether"
+            except NoConnectionError:
+                print "No web connection!"
+        else:
+            print "Command 'balance' takes no arguments"
+
+    def command_station(self, tokens):
+        if len(tokens) == 2:
+            address = tokens[1]
+            if self.user.registerStation(address) == True:
+                print "New station: " + str(address)
+            else:
+                print "Not a valid address"
+        else:
+            print "Command 'station' takes one argument"
+
+    def command_deposit(self, tokens):
+        if len(tokens) == 2:
+            try:
+                fltr = self.user.contract.on("chargeDeposited", None)
+                txHash = self.user.deposit(tokens[1])
+                event = getTxEvent(fltr, txHash, 20, 1)
                 if len(event) == 0:
                     print "Deposit timed out"
                     return
                 args = event['args']
-                print "Deposited " + str(eth_utils.from_wei(args['value'],'ether')) + " Ether" 
-            else:
-                print "Amount must be positive, non-zero"
-        else:
-            print "No station given! Use 'station' to set the address."
-    else:
-        print "Command 'station' takes one argument"
-
-def command_withdraw(tokens):
-    if len(tokens) == 1:
-        if contract.address != None:
-            contract.transact().withdraw()
-        else:
-            print "No station given! Use 'station' to set the address."
-    else:
-        print "Command 'station' takes one argument"
-
-def command_charge(tokens):
-    global updated
-    global charge_fltr
-    global stop_fltr
-    if len(tokens) == 1:
-        if contract.address != None:
-            fltr = contract.on("priceUpdated", None)
-            hashed = contract.call().getHash(web.eth.defaultAccount)
-            txHash = contract.transact().notify()
-            event = filter_utils.getDeepEvent(fltr, hashed, 20, 1)
-
-            if len(event) == 0:
-                print "Notification timed out"
+                print "Deposited " + str(from_wei(args['value'],'ether')) + " Ether"
                 return
+            except NoConnectionError:
+                print "No web connection!"
+                return
+            except NoStationError:
+                print "No registered station!"
+            except ValueError:
+                print "Not a valid number!"
+                return
+            except NotEnoughFundsError:
+                print "Not enough funds!"
+                return
+            finally:
+                fltr.running = False
+                fltr.stopped = True
+                self.eth().uninstallFilter(fltr.filter_id)
+        else:
+            print "Command 'deposit' takes one argument"
 
-            print "Price: " + str(eth_utils.from_wei(
-                event['args']['price'], 'ether')*1000*3600) + " Ether/kWh"
+    def command_withdraw(self, tokens):
+        if len(tokens) == 1:
+            try:
+                self.user.withdraw()
+            except NoConnectionError:
+                print "No web connection!"
+            except NoStationError:
+                print "No registered station!"
+        else:
+            print "Command 'station' takes one argument"
+
+    def command_charge(self, tokens):
+        if len(tokens) == 1:
+            try:
+                fltr = self.user.contract.on("priceUpdated", None)
+                hashed = self.user.getHash()
+                txHash = self.user.notify()
+                event = getDeepEvent(fltr, hashed, 20, 1)
+
+                if len(event) == 0:
+                    print "Notification timed out"
+                    return
+
+                print "Price: " + str(from_wei(
+                    event['args']['price'], 'ether')*1000*3600) + " Ether/kWh"
+            except NoConnectionError:
+                print "No web connection!"
+                return
+            except NoStationError:
+                print "No registered station!"
+                return
+            finally:
+                fltr.running = False
+                fltr.stopped = True
+                self.eth().uninstallFilter(fltr.filter_id)
 
             response = raw_input("Charge at current price (y/n)? ")
             if response != 'y':
-                contract.transact().cancel()
-                return
+                    try:
+                        self.user.cancel()
+                        return
+                    except NoConnectionError:
+                        print "No web connection!"
+                        return
+                    except NoStationError:
+                        print "No registered station!"
+                        return
 
-            fltr = contract.on("charging", None)
-            txHash = contract.transact().start()
-            event = filter_utils.getTxEvent(fltr, txHash, 20, 1)
-            if len(event) == 0:
-                print "Charging timed out"
-                return
-            print "Charging..."
-
-            def powerUpdate(event):
-                args = event['args']
-                charge = decimal.Decimal(args['consume'])
-                charge = charge/(decimal.Decimal(1000*3600))
-                exp = decimal.Decimal('0.000000001')
-                print "Charged " + str(charge.quantize(exp)) + " kWh"
-
-            def stop_filter(event):
-                global charge_fltr
-                global stop_fltr
-                args = event['args']
-                if args['charger'] == web.eth.defaultAccount:
-                    charge_fltr.stop_watching()
-                    stop_fltr.running = False
-                    stop_fltr.web3.eth.uninstallFilter(stop_fltr.filter_id)
-
-                    exp = decimal.Decimal('0.0000001')
-                    charge = decimal.Decimal(args['totalCharge'])
-                    charge = charge/(decimal.Decimal(1000*3600))
-                    cost = eth_utils.from_wei(args['cost'], 'ether')
-                    print "Charging stopped."
-                    print "Charged: " + str(charge.quantize(exp)) + " kWh"
-                    print "Total cost: " + str(cost.quantize(exp)) + " Ether"
-
-            charge_fltr = contract.on("consume", None, powerUpdate)
-            stop_fltr = contract.on("chargingStopped", None, stop_filter)
-            return            
-        else:
-            print "No station given! Use 'station' to set the address."
-    else:
-        print "Command 'charge' takes no argument"
-
-def command_stop(tokens):
-    global charge_fltr
-    global stop_fltr
-    if len(tokens) == 1:
-        if contract.address != None:
-            if charge_fltr != None:
-                charge_fltr.stopWatching()
-                charge_fltr = None
-            if stop_fltr != None:
-                stop_fltr.stopWatching()
-                stop_fltr = None    
             try:
-                fltr = contract.on("chargingStopped", None)
-                txHash = contract.transact().stop()
-                event = filter_utils.getTxEvent(fltr,txHash,20,1)
-                if len(event) != 0:
-                    args = event['args']
-                    exp = decimal.Decimal('0.0000001')
-                    charge = decimal.Decimal(args['totalCharge'])
-                    charge = charge/(decimal.Decimal(1000*3600))
-                    cost = eth_utils.from_wei(args['cost'], 'ether')
-                    print "Charging stopped."
-                    print "Charged: " + str(charge.quantize(exp)) + " kWh"
-                    print "Total cost: " + str(cost.quantize(exp)) + " Ether"
-                else:
-                    print "Stopping timed out"
-            except:
-                print "Not charging"
-            
+                fltr = self.user.contract.on("charging", None)
+                txHash = self.user.start()
+                event = getTxEvent(fltr, txHash, 20, 1)
+                
+                if len(event) == 0:
+                    print "Charging timed out"
+                    return
+                print "Charging..."
+
+                self.charge_fltr = self.user.contract.on("consume", None, self.powerUpdate)
+                self.stop_fltr = self.user.contract.on("chargingStopped", None, self.stop_filter)
+                return
+            except NoConnectionError:
+                print "No web connection!"
+                return
+            except NoStationError:
+                print "No registered station!"
+                return
+            finally:
+                fltr.running = False
+                fltr.stopped = True
+                self.eth().uninstallFilter(fltr.filter_id)
         else:
-            print "No station given! Use 'station' to set the address."
-    else:
-        print "Command 'stop' takes no argument"
+            print "Command 'charge' takes no argument"
 
-def command_logout(tokens):
-    global charge_fltr 
-    if len(tokens) == 1:
-        try:
-            contract.transact().stop()
-        except:
-            print "Not charging"
-        if charge_fltr != None:
-            charge_fltr.stop_watching()
-            charge_fltr = None
-        exit(0)
-    else:
-        print "Command 'logout' takes no argument"
+    def command_stop(self, tokens):
+        if len(tokens) == 1:
+            if self.charge_filter == None and self.stop_filter == None:
+                print "Not charging"
+                return
+            try:
+                fltr = self.user.contract.on("chargingStopped", None)
+                txHash = self.user.stop()
+                event = getTxEvent(fltr,txHash,20,1)
 
-commands = {
-    "help": command_help,
-    "ls": command_ls,
-    "balance": command_balance,
-    "station": command_station,
-    "deposit": command_deposit,
-    "withdraw": command_withdraw,
-    "charge": command_charge,
-    "stop": command_stop,
-    "logout": command_logout
-    }
+                if len(event) == 0:
+                    print "Stopping timed out"
+            except NoConnectionError:
+                print "No web connection!"
+                return
+            except NoStationError:
+                print "No registered station!"
+                return
+            finally:
+                fltr.running = False
+                fltr.stopped = True
+                self.eth().uninstallFilter(fltr.filter_id)               
+        else:
+            print "Command 'stop' takes no argument"
 
-command_desc = {
-    "help": "Get help on commands. Identical to ls.",
-    "ls": "List all commands",
-    "balance": "Fetch account balance",
-    "station": "Set the contract address of the charging station, takes address as single argument",
-    "deposit": "Deposit ether, takes deposit amount as single argument",
-    "withdraw": "Withdraw all your ether",
-    "charge": "Begin charging",
-    "stop": "Stop charging",
-    "logout": "Logout"
-    }
+    def command_logout(self, tokens):
+        if len(tokens) == 1:
+            self.clean_up()
+            quit(0)
+        else:
+            print "Command 'logout' takes no argument"
 
-#Exit clean up
-def clean_up():
-    global charge_fltr
+
+    #Exit clean up
+    def clean_up(self):
+        if self.charge_filter != None or self.stop_filter != None:
+            try:
+                self.user.stop()
+                if self.charge_filter != None:
+                    self.charge_filter.join(5)
+                    self.charge_filter = None
+                if self.stop_filter != None:
+                    self.stop_filter.join(5)
+                    self.stop_filter = None
+                return
+            except NoConnectionError:
+                print "No web connection!"
+                return
+            except NoStationError:
+                print "No registered station!"
+                return
+        else:
+            try:
+                self.user.cancel()
+                return
+            except NoConnectionError:
+                print "No web connection!"
+                return
+            except NoStationError:
+                print "No registered station!"
+                return
+
+
+if __name__ == "__main__":
+    cli = None
+    input_string = raw_input(">Enter account number: ")
+    regex = r"^([0-9])$"
+    resp = match(regex, input_string)
+    if resp == None:
+        print "Not a valid account number!"
+        quit(0)
+    web = getWeb()
+    if web.isConnected() == False:
+        print "No web connection!"
+        quit(0)
+    print "Connected!"
+    print "Type 'help' for more information."
+    cli = UserCLI(web)
+    cli.user.setAccount(cli.eth().accounts[int(input_string)])
     try:
-        contract.transact().stop()
-    except:
-        print "Not charging"
-    if charge_fltr != None:
-        charge_fltr.stopWatching()
-        charge_fltr = None
-            
-atexit.register(clean_up)
-
-#Main loop
-
-while True:
-    tokens = raw_input(">").split()
-    parse_input(tokens)(tokens)
+        while True:
+            input_string = raw_input(">")
+            tokens = split(input_string)
+            cli.parse_input(tokens)(tokens)
+    except Exception as e:
+        print_exc()
+        cli.clean_up()

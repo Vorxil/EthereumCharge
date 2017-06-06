@@ -25,3 +25,6 @@ def buildAndDeploy(contractName, source, contractPath, web, *args, **kwargs):
 
 def getWeb(url="http://localhost:8545"):
     return Web3(HTTPProvider(url))
+
+def getAccounts(web3):
+    return web3.eth.accounts

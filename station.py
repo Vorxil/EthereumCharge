@@ -10,6 +10,7 @@ from threading import Thread
 from time import sleep, clock
 from user import NoConnectionError, connected, hasAddress
 from filter_utils import getDeepEvent
+import atexit
 
 class NoJsonException(RequestException):
     """The response has no json!"""
@@ -151,12 +152,12 @@ class Station:
 
     def tearDownFilters(self):
         for key in self.filters.keys():
-            fltr = filters.pop(key)
+            fltr = self.filters.pop(key)
             if fltr.running == True:
                 fltr.stopWatching()
-            else:
-                fltr.stopped = True
-                fltr.web3.eth.uninstallFilter(fltr.filter_id)
+            fltr.running = False
+            fltr.stopped = True
+            fltr.web3.eth.uninstallFilter(fltr.filter_id)
 
     #Daemon function
     @connected()
@@ -190,6 +191,7 @@ class Station:
                   voltage_high,
                   battery_capacity,
                   battery_resistance)
+        print "Charging at " + str(p) + " W"
         self.contract.transact().updatePower(int(ceil(p)))
 
     #Event Handlers
@@ -247,17 +249,4 @@ class Station:
         fltr = self.filters.pop(fltr_name)
         fltr.stopWatching()
 
-
-def priceUpdated(event):
-        args = event['args']
-        print "New price:\t" + str(from_wei(args['price'],'ether')*1000*3600) + " Ether/kWh"
-
-def stateChanged(event):
-    args = event['args']
-    print "State changed:\t%d => %d" % (args['from'], args['to'])
-        
-w = getWeb()
-w.eth.defaultAccount = w.eth.accounts[0]
-s = Station.factoryDeploy(w.eth.accounts[0], w.eth.accounts[1])
-
-
+    

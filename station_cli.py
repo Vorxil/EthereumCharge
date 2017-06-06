@@ -1,139 +1,85 @@
-import solc, web3, time, atexit, string, sys, math, datetime, decimal, threading, eth_utils, filter_utils
+from factory import getWeb
+from station import Station
+from string import split
+import atexit
 
-class station:
+class StationCLI:
 
-    contract = None
-    web = None
-    charging = False
-    charger = None
-    thread = None
-    filters = {}
+    #Variables
+    station = None
+    commands = {}
+    command_desc = {}
 
-    def __init__(self, url, owner_account, station_account):
-        
-        filePath = ".\\chargeStation.sol"
-        contractName = "ChargeStation"
-
-        compiled = solc.compile_files([filePath])
-
-        contract_abi = compiled[filePath + ":" + contractName]['abi']
-        contract_bin = compiled[filePath + ":" + contractName]['bin']
-        contract_bin_runtime = compiled[filePath + ":" + contractName]['bin-runtime']
-
-        web = web3.Web3(web3.providers.rpc.HTTPProvider(url))
-
-        connected = web.isConnected()
-
-        print "Is connected to TestRPC: " + str(connected)
-        if not connected:
-            raise ValueError
-
-        web.eth.defaultAccount = station_account
-
-        contract = web3.contract.Contract.factory(web,
-                                                  contract_name = contractName,
-                                                  abi = contract_abi,
-                                                  bytecode = contract_bin,
-                                                  bytecode_runtime = contract_bin_runtime)
-
-        contract.address = contract.web3.eth.getTransactionReceipt(
-                                contract.deploy(
-                                    transaction = {'from': owner_account},
-                                    args = (station_account, 120)
-                                )
-                            )['contractAddress']
-
-        print "Contract deployed at " + contract.address
-
-        #Charging details
-        self.thread = None
-        self.charger = None
-        self.chargeState = False
-
-        self.contract = contract
-        self.web = web
-
-        self.setup_filters()
-
-    #Event handlers
-    def updatePrice(self, event):
-        d = datetime.datetime.now()
-        delta = d - datetime.datetime(d.year, 1, 1)
-        nominal = 7.69 + math.sin(2*math.pi*float(delta.days)/365.25)#0.01 Euro/kWh
-        eurToEther = 1/82.5470 #Ether/Euro
-        converted = 0.01*nominal*eurToEther/(1000*3600)#Ether/J
-        self.contract.transact().update(eth_utils.to_wei(converted,'ether'),
-                                        event['args']['asker'])
-
-    def chargeDeposited(self, event):
-        args = event['args']
-        print str(args['from']) + " deposit:\t" + str(args['value']) + " Wei"
-
-    def priceUpdated(self, event):
-        args = event['args']
-        print "New price:\t" + str(eth_utils.from_wei(args['price'],'ether')*1000*3600) + " Ether/kWh"
-
-    def stateChanged(self, event):
-        args = event['args']
-        print "State change:\t" + str(args['from']) + "\t==>\t" + str(args['to'])
-
-    def updatePower(self,charger,t0,sleepTime):
-        global charging
-        print charger + " charging..."
-        while (charging):
-            t1 = time.clock()
-            delta = t1-t0
-            p = self.power(t1-t0,130,400,300)
-            self.contract.transact().updatePower(int(math.ceil(p)))
-            print "Consuming at " + str(p) + " W"
-            time.sleep(sleepTime)
-
-    def charging(self, event):
-        global charger
-        global charging
-        global thread
-        args = event['args']
-        charger = args['charger']
-        charging = True
-        thread = threading.Thread(target=self.updatePower, args=(str(charger),time.clock(),6))
-        thread.start()
-
-    def stop_charging(self, event):
-        global charging
-        global thread
-        charging = False
-        thread.join()
-        print "Charging stopped"
-        charger = None
-
-    def power(self, time, RC, Vs, i0):
-        voltage = Vs*(1 - math.exp(-time/float(RC)))
-        current = i0*math.exp(-time/float(RC))
-        return voltage*current
-
-    #Exit clean up
-    def clean_up():
-        for fltr in self.filters:
-            fltr.stopWatching()
-
-    #Filters
-    def setup_filters(self):    
-        self.filters = {
-            "chargeDeposited": self.contract.on("chargeDeposited", None, self.chargeDeposited),
-            "fetchPrice": self.contract.on("fetchPrice", None, self.updatePrice),
-            "stateChanged": self.contract.on("stateChanged", None, self.stateChanged),
-            "priceUpdated": self.contract.on("priceUpdated", None, self.priceUpdated),
-            "charging": self.contract.on("charging", None, self.charging),
-            "stopCharging": self.contract.on("chargingStopped", None, self.stop_charging),
-            "killed": self.contract.on("killed", None, self.clean_up)
+    #Constructor
+    def __init__(self, station):
+        self.station = station
+        self.commands = {
+            "help": self.command_help,
+            "quit": self.command_quit
             }
+        self.command_desc = {
+            "help": "List all commands available",
+            "quit": "Shutdown station"
+            }
+        atexit.register(self.clean_up)
 
+    def parse_input(self, tokens):
+        if len(tokens) == 0:
+            return self.do_nothing
+        else:
+            if tokens[0] in self.commands:
+                return self.commands[tokens[0]]
+            else:
+                return self.invalid_command
 
-web = web3.Web3(web3.providers.rpc.HTTPProvider("http://localhost:8545"))
-s = station("http://localhost:8545", web.eth.accounts[1], web.eth.accounts[0])
+    def address(self):
+        if self.station == None or self.station.contract == None or self.station.contract.address == None:
+            return "No address"
+        return self.station.contract.address
 
-while (True):
-    inp = raw_input()
-    if inp == 'q':
-        s.clean_up()
-    quit(0)
+    #Commands
+    def do_nothing(self, tokens):
+        return
+
+    def invalid_command(self, tokens):
+        print str(tokens[0]) + " is not a valid command. Use 'help' for help."
+        return
+
+    def command_help(self, tokens):
+        if len(tokens) == 1:
+            for command in self.command_desc:
+                print command + "\t" + self.command_desc[command]
+            return
+        else:
+            print "Command 'help' takes no arguments"
+
+    def command_quit(self, tokens):
+        if len(tokens) == 1:
+            self.clean_up()
+            quit(0)
+        else:
+            print "Command 'quit' takes no argument"
+        
+
+    #Clean up
+    def clean_up(self):
+        if self.station != None:
+            self.station.tearDownFilters
+            self.station = None
+        return
+
+    
+
+    
+
+if __name__ == '__main__':
+    web = getWeb()
+    station_account = web.eth.accounts[0]
+    owner_account = web.eth.accounts[1]
+    web.eth.defaultAccount = station_account
+    cli = StationCLI(Station.factoryDeploy(station_account, owner_account, 30, web))
+    print "Station address:\t" + cli.address()
+    while True:
+        input_string = raw_input()
+        tokens = split(input_string)
+        cli.parse_input(tokens)(tokens)

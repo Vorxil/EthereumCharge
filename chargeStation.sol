@@ -171,7 +171,6 @@ contract ChargeStation is Owned {
 			chargeEnd = now;
 			uint cost = totalCharge*price;
 			uint amount = balances[charger];
-			chargingStopped(charger, chargeEnd, totalCharge, cost);
 			if (cost > amount) {
 				balances[owner] = amount;
 				balances[charger] = 0;
@@ -182,6 +181,7 @@ contract ChargeStation is Owned {
 			}
 			state = State.Idle;
 			stateChanged(State.Charging, State.Idle);
+			chargingStopped(charger, chargeEnd, totalCharge, cost);
 			return true;
 		}
 		return false;
