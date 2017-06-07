@@ -78,6 +78,10 @@ if __name__ == '__main__':
     owner_account = web.eth.accounts[1]
     web.eth.defaultAccount = station_account
     cli = StationCLI(Station.factoryDeploy(station_account, owner_account, 30, web))
+    def stateChange(event):
+        args = event['args']
+        print "State Changed:\t" + str(args['from']) + ' ==> ' + str(args['to'])
+    cli.station.addFilter('state', 'stateChanged', stateChange)
     print "Station address:\t" + cli.address()
     while True:
         input_string = raw_input()

@@ -63,6 +63,10 @@ contract ChargeStation is Owned {
 		return uint8(state);
 	}
 	
+	function getCharger() returns (address) {
+		return charger;
+	}
+	
 	function update(uint _price, bytes32 asker) onlyStation returns (bool){
 		uint time = now;
 		if (state == State.Idle) {
@@ -180,6 +184,7 @@ contract ChargeStation is Owned {
 				balances[charger] = amount - cost;
 			}
 			state = State.Idle;
+			charger = address(0);
 			stateChanged(State.Charging, State.Idle);
 			chargingStopped(charger, chargeEnd, totalCharge, cost);
 			return true;

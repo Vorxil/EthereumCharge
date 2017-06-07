@@ -20,8 +20,8 @@ class UserCLI:
 
     #Variables
     user = None
-    charge_filter = None
-    stop_filter = None
+    charge_fltr = None
+    stop_fltr = None
     commands = {}
     command_desc = {}
 
@@ -69,6 +69,15 @@ class UserCLI:
     def eth(self):
         return self.user.contract.web3.eth
 
+    def printTotal(self,args):
+        exp = Decimal('0.0000001')
+        charge = Decimal(args['totalCharge'])
+        charge = charge/Decimal(1000*3600)
+        cost = from_wei(args['cost'], 'ether')
+        print "Charging stopped."
+        print "Charged: " + str(charge.quantize(exp)) + " kWh"
+        print "Total cost: " + str(cost.quantize(exp)) + " Ether"
+
     #Event handlers
     def powerUpdate(self, event):
         args = event['args']
@@ -83,14 +92,7 @@ class UserCLI:
             self.charge_fltr.stop_watching()
             self.stop_fltr.running = False
             self.stop_fltr.web3.eth.uninstallFilter(self.stop_fltr.filter_id)
-
-            exp = Decimal('0.0000001')
-            charge = Decimal(args['totalCharge'])
-            charge = charge/Decimal(1000*3600)
-            cost = from_wei(args['cost'], 'ether')
-            print "Charging stopped."
-            print "Charged: " + str(charge.quantize(exp)) + " kWh"
-            print "Total cost: " + str(cost.quantize(exp)) + " Ether"
+            self.printTotal(args)
 
     #Commands
     def do_nothing(self, tokens):
@@ -241,7 +243,7 @@ class UserCLI:
 
     def command_stop(self, tokens):
         if len(tokens) == 1:
-            if self.charge_filter == None and self.stop_filter == None:
+            if self.charge_fltr == None and self.stop_fltr == None:
                 print "Not charging"
                 return
             try:
@@ -251,6 +253,14 @@ class UserCLI:
 
                 if len(event) == 0:
                     print "Stopping timed out"
+
+                self.charge_fltr.stopWatching()
+                self.stop_fltr.stopWatching()
+                self.charge_fltr = None
+                self.stop_fltr = None
+
+                self.printTotal(event['args'])
+                
             except NoConnectionError:
                 print "No web connection!"
                 return
@@ -274,15 +284,28 @@ class UserCLI:
 
     #Exit clean up
     def clean_up(self):
-        if self.charge_filter != None or self.stop_filter != None:
+        print str(self.charge_fltr == None)
+        print str(self.stop_fltr == None)
+        print str(self.charge_fltr != None or self.stop_fltr != None)
+        if self.charge_fltr != None or self.stop_fltr != None:
             try:
                 self.user.stop()
-                if self.charge_filter != None:
-                    self.charge_filter.join(5)
-                    self.charge_filter = None
-                if self.stop_filter != None:
-                    self.stop_filter.join(5)
-                    self.stop_filter = None
+                if self.charge_fltr != None:
+                    if self.charge_fltr.running == True:
+                        self.charge_fltr.stopWatching()
+                    else:
+                        self.charge_fltr.running = False
+                        self.charge_fltr.stopped = True
+                        self.eth().uninstallFilter(self.charge_fltr.filter_id)
+                    self.charge_fltr = None
+                if self.stop_fltr != None:
+                    if self.stop_fltr.running == True:
+                        self.stop_fltr.stopWatching()
+                    else:
+                        self.stop_fltr.running = False
+                        self.stop_fltr.stopped = True
+                        self.eth().uninstallFilter(self.stop_fltr.filter_id)
+                    self.stop_fltr = None
                 return
             except NoConnectionError:
                 print "No web connection!"
@@ -292,8 +315,10 @@ class UserCLI:
                 return
         else:
             try:
-                self.user.cancel()
-                return
+                if self.user.getState() == self.STATES.NOTIFIED and self.user.getCharger() == self.eth().defaultAccount:
+
+                    self.user.cancel()
+                    return
             except NoConnectionError:
                 print "No web connection!"
                 return

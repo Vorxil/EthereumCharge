@@ -191,8 +191,13 @@ class Station:
                   voltage_high,
                   battery_capacity,
                   battery_resistance)
-        print "Charging at " + str(p) + " W"
-        self.contract.transact().updatePower(int(ceil(p)))
+        txHash = self.contract.transact().updatePower(int(ceil(p)))
+        resp = self.contract.web3.eth.getTransactionReceipt(txHash)
+        gas = Decimal(resp['gasUsed'])
+        gasPrice = Decimal(self.contract.web3.eth.gasPrice)
+        cost = from_wei(gas*gasPrice,'ether')
+        print "Charging at " + str(p) + " W | Tx Cost:\t" + str(cost) + " Ether"
+        
 
     #Event Handlers
     @connected()

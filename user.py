@@ -115,7 +115,12 @@ class User:
     @connected()
     @hasAddress()
     def getState(self):
-        return self.contract.call().getState()
+        return self.contract.call().getStateInt()
+
+    @connected()
+    @hasAddress()
+    def getCharger(self):
+        return self.contract.call().getCharger()
 
     def isConnected(self):
         return self.contract.web3.isConnected()
